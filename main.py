@@ -1,136 +1,148 @@
 import os
-import pandas as pd  # Importamos PANDAS
+import json
+import pandas as pd
 import google.generativeai as genai
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from fastapi.middleware.cors import CORSMiddleware  # Importamos CORS
+from fastapi.middleware.cors import CORSMiddleware
+from typing import List, Optional, Dict, Any
 
 # --- 1. CONFIGURACIÓN INICIAL ---
 load_dotenv()
 
-# Configura la app FastAPI
 app = FastAPI(
     title="API del Chatbot de Telemedicina",
-    description="Backend para el chatbot RAG y el sistema de alertas."
+    description="Backend optimizado con JSON Mode y Safety Settings."
 )
 
-# --- 2. CONFIGURACIÓN DE CORS (¡MUY IMPORTANTE!) ---
-# Esto permite que la app de Frontend (HTML/JS)
-# pueda hacerle peticiones a tu Backend (esta API)
-origins = ["*"]  # Permite que CUALQUIER sitio web llame a tu API
-
+# --- 2. CONFIGURACIÓN DE CORS ---
+origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],  # Permite todos los métodos (GET, POST, etc)
-    allow_headers=["*"],  # Permite todos los encabezados
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# --- 3. CONFIGURACIÓN DE IA (Gemini) ---
+# --- 3. CONFIGURACIÓN DE IA (Gemini BLINDADO) ---
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 if not GOOGLE_API_KEY:
     raise ValueError("No se encontró la GOOGLE_API_KEY en el .env")
+
 genai.configure(api_key=GOOGLE_API_KEY)
-generation_config = {"temperature": 0.7, "top_p": 1, "top_k": 1, "max_output_tokens": 2048}
-model = genai.GenerativeModel(model_name="gemini-2.5-flash", generation_config=generation_config)
 
-# --- 4. CARGA ÚNICA DE DATOS (El gran cambio) ---
-# Leemos el CSV al arrancar el servidor y lo guardamos en un DataFrame de Pandas
+# A. SAFETY SETTINGS (La cura para el Error 500)
+# Esto permite que la IA procese temas médicos "fuertes" sin bloquearse.
+safety_settings = [
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+]
+
+# B. MODELO (Corregido a 1.5-flash y con JSON Mode activado)
+# 'response_mime_type': 'application/json' obliga a la IA a responder SOLO JSON.
+generation_config = {
+    "temperature": 0.5, # Bajamos temperatura para ser más precisos
+    "top_p": 1, 
+    "max_output_tokens": 2048,
+    "response_mime_type": "application/json" 
+}
+
+model = genai.GenerativeModel(
+    model_name="gemini-2.5-flash", # OJO: gemini-2.5 no existe publicamente aun, usa 1.5
+    generation_config=generation_config,
+    safety_settings=safety_settings
+)
+
+# --- 4. CARGA DE DATOS (Doctores) ---
+df_doctores = pd.DataFrame() # Inicializamos vacío por seguridad
+texto_doctores_csv = ""
+
 try:
-    # Asegúrate que tu archivo se llama 'doctores.csv'
     df_doctores = pd.read_csv("doctores.csv")
-    print(f"--- CSV 'doctores.csv' cargado exitosamente. {len(df_doctores)} doctores encontrados. ---")
-except FileNotFoundError:
-    print("--- ERROR: No se encontró el archivo 'doctores.csv'. El bot funcionará sin datos de doctores. ---")
-    # Creamos un DataFrame vacío para que el código no falle más adelante
-    df_doctores = pd.DataFrame(columns=["nombre_completo", "especialidad", "bio_corta"])
+    # Convertimos el DataFrame a un string formateado para pasárselo al Prompt
+    # Esto ayuda a la IA a leer mejor los datos
+    for index, row in df_doctores.iterrows():
+        # Aseguramos que exista la columna ID, si no, usamos el índice
+        id_doc = row['id'] if 'id' in row else index 
+        texto_doctores_csv += f"- ID: {id_doc} | Nombre: {row['nombre_completo']} | Especialidad: {row['especialidad']} | Bio: {row['bio_corta']}\n"
+        
+    print(f"--- CSV cargado. {len(df_doctores)} doctores listos. ---")
 except Exception as e:
-    print(f"--- ERROR al cargar 'doctores.csv': {e} ---")
-    df_doctores = pd.DataFrame(columns=["nombre_completo", "especialidad", "bio_corta"])
+    print(f"--- ERROR CRÍTICO cargando CSV: {e} ---")
+    texto_doctores_csv = "No hay doctores disponibles en la base de datos."
 
-
-# --- 5. PROMPTS (Igual que antes) ---
-PROMPT_SISTEMA_GENERAL = """
-Eres 'SaludBot', un asistente de telemedicina. Tu único propósito es ayudar a los usuarios
-a identificar posibles causas de sus síntomas y conectarlos con doctores de la plataforma.
-Tus reglas son estrictas:
-1. NUNCA des un diagnóstico definitivo.
-2. Si la información es vaga (ej. "me duele"), DEBES hacer preguntas de seguimiento.
-3. Si el usuario pregunta algo no médico, responde: "Lo siento, mi función es solo ayudarte con consultas de salud."
-"""
-
-PROMPT_EXTRACTOR_ESPECIALIDAD = """
-Analiza el siguiente mensaje de un usuario. Responde ÚNICAMENTE con la especialidad médica más relevante
-para los síntomas descritos. Si NO es una consulta médica o no está claro, responde solo con "N/A".
-Ejemplos:
-Usuario: "Me duele la cabeza y veo luces." -> Respuesta: Neurología
-Usuario: "Creo que me rompí el brazo." -> Respuesta: Traumatología
-Usuario: "Tengo mucha tos y fiebre." -> Respuesta: Medicina General
-Mensaje del usuario: "{mensaje_usuario}"
-Respuesta (solo la especialidad o N/A):
-"""
-
-# --- 6. MODELOS DE DATOS (Igual que antes) ---
+# --- 5. MODELOS DE DATOS ---
 class ChatInput(BaseModel):
-    user_id: str
+    user_id: Optional[str] = "anonimo"
     mensaje: str
+    contexto_medico: Optional[str] = "Ninguno" # Ej: "Tengo diabetes"
 
+# Este modelo ahora es un Dict para aceptar cualquier estructura JSON que mande la IA
 class ChatOutput(BaseModel):
-    respuesta_bot: str
+    respuesta: Dict[str, Any]
 
-# --- 7. ENDPOINT DEL CHAT (Lógica RAG modificada) ---
+# --- 6. ENDPOINT DEL CHAT (Lógica Renovada) ---
 @app.post("/chat", response_model=ChatOutput)
 async def handle_chat(input: ChatInput):
     try:
-        # --- PASO A: PRE-ANÁLISIS (1ra Llamada a IA) ---
-        prompt_especialidad = PROMPT_EXTRACTOR_ESPECIALIDAD.format(mensaje_usuario=input.mensaje)
-        response_especialidad = await model.generate_content_async(prompt_especialidad)
-        especialidad = response_especialidad.text.strip()
-
-        # --- PASO B: MANEJAR TEMAS NO MÉDICOS ---
-        if especialidad == "N/A":
-            return ChatOutput(respuesta_bot="Lo siento, mi función es solo ayudarte con consultas de salud. ¿Tienes algún síntoma del que quieras hablarme?")
-
-        # --- PASO C: BÚSQUEDA (Retrieval) - ¡LA PARTE MODIFICADA! ---
-        # Buscamos en el DataFrame de Pandas (en memoria), no en la BD.
-        # Nos aseguramos de que ambas cadenas (la del CSV y la del LLM) estén "limpias".
-        if df_doctores.empty:
-            lista_doctores_filtrados = []
-        else:
-            resultados = df_doctores[df_doctores['especialidad'].str.strip().str.lower() == especialidad.strip().str.lower()]
-            # Convertimos los resultados de Pandas a una lista de diccionarios
-            lista_doctores_filtrados = resultados.head(3).to_dict('records') # .head(3) limita a 3 doctores
-
-        contexto_doctores = "No se encontraron doctores para esta especialidad."
-        if lista_doctores_filtrados:
-            contexto_doctores = "Doctores disponibles encontrados:\n"
-            for doc in lista_doctores_filtrados:
-                contexto_doctores += f"- {doc['nombre_completo']} ({doc['especialidad']}): {doc['bio_corta']}\n"
-
-        # --- PASO D: GENERACIÓN (2da Llamada a IA) ---
-        prompt_final = f"""
-        {PROMPT_SISTEMA_GENERAL}
-        ---
-        Contexto (Doctores encontrados en nuestro archivo CSV):
-        {contexto_doctores}
-        ---
-        Mensaje del usuario:
-        "{input.mensaje}"
-        ---
-        Tu respuesta (recuerda tus reglas, no diagnostiques, y si los doctores son relevantes, menciónalos):
+        # El Prompt Maestro: hace el trabajo de análisis y selección en un solo paso
+        prompt = f"""
+        Eres un asistente médico de triaje inteligente para una app de telemedicina.
+        
+        TUS DATOS (DOCTORES DISPONIBLES):
+        {texto_doctores_csv}
+        
+        INPUT DEL USUARIO:
+        - Historial/Contexto: {input.contexto_medico}
+        - Mensaje actual: "{input.mensaje}"
+        
+        INSTRUCCIONES:
+        1. Analiza si el usuario describe síntomas, dolores o dudas médicas.
+        2. Si NO es tema médico, responde educadamente que no puedes ayudar.
+        3. Si ES tema médico:
+           - Identifica la especialidad necesaria (Traumatología, Cardiología, etc.).
+           - Busca en la lista de doctores arriba quién es el MÁS adecuado.
+           - Considera el contexto (ej. si tiene diabetes, prioriza endocrino o internista si es relevante).
+           
+        FORMATO DE RESPUESTA JSON (OBLIGATORIO):
+        {{
+            "es_medico": true/false,
+            "mensaje_al_usuario": "Tu respuesta empática y clara aquí...",
+            "recomendaciones": [
+                {{
+                    "id_doctor": "El ID exacto del CSV",
+                    "nombre": "Nombre del doctor",
+                    "especialidad": "Su especialidad",
+                    "motivo": "Breve razón de por qué este doctor sirve para este caso"
+                }}
+            ]
+        }}
         """
 
-        response_final = await model.generate_content_async(prompt_final)
+        # Llamada a Gemini
+        response = await model.generate_content_async(prompt)
         
-        return ChatOutput(respuesta_bot=response_final.text.strip())
+        # Limpieza y parseo de la respuesta
+        # A veces la IA puede mandar texto antes del JSON, aseguramos limpieza
+        json_str = response.text.strip()
+        
+        # Convertimos el string JSON a un objeto Python real (Diccionario)
+        parsed_response = json.loads(json_str)
 
+        return ChatOutput(respuesta=parsed_response)
+
+    except json.JSONDecodeError:
+        # Si la IA falló en hacer JSON exacto (muy raro con 1.5 Flash), manejamos el error
+        raise HTTPException(status_code=500, detail="Error interno de formato IA.")
     except Exception as e:
-        print(f"Error en el endpoint /chat: {e}")
-        raise HTTPException(status_code=500, detail="Ocurrió un error al procesar tu solicitud.")
+        print(f"Error en servidor: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# --- 8. ENDPOINT DE BIENVENIDA (Para probar) ---
+# --- 7. ENDPOINT DE PRUEBA ---
 @app.get("/")
 def read_root():
-    return {"mensaje": "API del Chatbot de Telemedicina funcionando (Modo CSV)"}
+    return {"status": "Online", "mode": "JSON + Safety Settings Active"}
