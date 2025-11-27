@@ -28,8 +28,11 @@ app.add_middleware(
 )
 
 # --- 3. CONEXIÓN A MONGODB ATLAS (NUEVO) ---
-# ⚠️ IMPORTANTE: Pon aquí tu usuario y contraseña reales
-MONGO_URI = "mongodb+srv://ferUser:bjQPp92t4rFri2LR@cluster0.lbb5spp.mongodb.net/?appName=Cluster0"
+MONGO_URI = os.getenv('MONGO_URI')
+
+# Verificamos que exista para no romper todo
+if not MONGO_URI:
+    raise ValueError("No se encontró la MONGO_URI en el archivo .env")
 
 try:
     mongo_client = MongoClient(MONGO_URI)
