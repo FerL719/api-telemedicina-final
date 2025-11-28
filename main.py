@@ -37,7 +37,7 @@ if not MONGO_URI:
 try:
     mongo_client = MongoClient(MONGO_URI)
     db = mongo_client["VirtualMedDB"]  # Base de datos correcta
-    collection = db["doctors"]         # Colección correcta
+    collection = db["doctor"]         # Colección correcta
     # Ping rápido para verificar conexión al iniciar
     mongo_client.admin.command('ping')
     print("✅ ¡Conexión exitosa a MongoDB Atlas!")
@@ -95,12 +95,12 @@ async def handle_chat(input: ChatInput):
             for doc in cursor_doctores:
                 # Mapeamos los campos de Mongo a texto para la IA
                 mongo_id = str(doc.get("_id", "")) # ID único
-                nombre = doc.get("name", "")
-                apellido = doc.get("surname", "")
+                nombre = doc.get("nombre", "")
+                apellido = doc.get("apellido", "")
                 nombre_completo = f"{nombre} {apellido}"
                 
-                especialidad = doc.get("medicalSpecialty", "Medicina General")
-                subespecialidad = doc.get("medicalSubspecialty", "")
+                especialidad = doc.get("especialidad", "Medicina General")
+                subespecialidad = doc.get("subespecialidad", "")
                 
                 info = f"- ID: {mongo_id} | Dr/a: {nombre_completo} | Esp: {especialidad}"
                 if subespecialidad:
