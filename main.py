@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional, Dict, Any
+# 👇 NUEVO: Importamos el conector de Mongo
 from pymongo import MongoClient
 
 # --- 1. CONFIGURACIÓN INICIAL ---
@@ -26,7 +27,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- 3. CONEXIÓN A MONGODB ATLAS ---
+# --- 3. CONEXIÓN A MONGODB ATLAS (NUEVO) ---
 MONGO_URI = os.getenv('MONGO_URI')
 
 # Verificamos que exista para no romper todo
@@ -36,14 +37,14 @@ if not MONGO_URI:
 try:
     mongo_client = MongoClient(MONGO_URI)
     db = mongo_client["VirtualMedDB"]  # Base de datos correcta
-    collection = db["doctor"]         # Colección correcta
+    collection = db["doctors"]         # Colección correcta
     # Ping rápido para verificar conexión al iniciar
     mongo_client.admin.command('ping')
     print("✅ ¡Conexión exitosa a MongoDB Atlas!")
 except Exception as e:
     print(f"❌ Error CRÍTICO conectando a Mongo: {e}")
 
-# --- 4. CONFIGURACIÓN DE IA ---
+# --- 4. CONFIGURACIÓN DE IA (Gemini BLINDADO) ---
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 if not GOOGLE_API_KEY:
     raise ValueError("No se encontró la GOOGLE_API_KEY en el .env")
@@ -66,7 +67,7 @@ generation_config = {
     "response_mime_type": "application/json" 
 }
 
-# Versión estable 2.5-flash
+# Usamos la versión estable 2.5-flash
 model = genai.GenerativeModel(
     model_name="gemini-2.5-flash", 
     generation_config=generation_config,
@@ -82,7 +83,7 @@ class ChatInput(BaseModel):
 class ChatOutput(BaseModel):
     respuesta: Dict[str, Any]
 
-# --- 6. ENDPOINT DEL CHAT (Lógica con Mongo) ---
+# --- 6. ENDPOINT DEL CHAT (Lógica Renovada con Mongo) ---
 @app.post("/chat", response_model=ChatOutput)
 async def handle_chat(input: ChatInput):
     try:
@@ -111,7 +112,7 @@ async def handle_chat(input: ChatInput):
             print(f"Error leyendo Mongo en request: {e_mongo}")
             texto_doctores_mongo = "Error al acceder a la base de datos de doctores."
 
-        # PASO B: Prompt Base
+        # PASO B: El Prompt Maestro
         prompt = f"""
         Eres MediChat, un asistente médico de triaje inteligente.
         
@@ -163,5 +164,4 @@ async def handle_chat(input: ChatInput):
 # --- 7. ENDPOINT DE PRUEBA ---
 @app.get("/")
 def read_root():
-
     return {"status": "Online", "database": "MongoDB Atlas Connected"}
